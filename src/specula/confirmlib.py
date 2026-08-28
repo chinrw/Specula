@@ -78,7 +78,7 @@ FINDING = {"ENV_LIMITED", "MASKED"}
 # limit, malformed output). Recorded so the target still delivers, marked clearly,
 # and NOT cached so a retry re-attempts it. Deliberately outside CANON.
 INCOMPLETE = "INCOMPLETE"
-VALID_SOURCES = {"model-checking", "code-review"}
+VALID_SOURCES = {"model-checking", "code-review", "syscall-inputs"}
 ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 _CACHE_VERSION = 3
 _CANDIDATE_CACHE = ".candidates-cache.json"
@@ -1149,6 +1149,8 @@ def _source_kind(f: Finding) -> str:
         return "model-checking"
     if source in {"code-review", "code review", "cr"} or (not source and f.id.startswith("CR-")):
         return "code-review"
+    if source == "syscall-inputs" or (not source and f.id.startswith("SI-")):
+        return "syscall-inputs"
     raise InvalidAgentOutput(f"{f.id}: unknown finding source {f.data.get('source')!r}")
 
 
@@ -1156,7 +1158,7 @@ def _validate_status_source(f: Finding, status: str) -> None:
     source = _source_kind(f)
     if status == "PENDING REPAIR" and source != "model-checking":
         raise InvalidAgentOutput(f"{f.id}: PENDING REPAIR is only valid for model-checking findings")
-    if status == "DROPPED" and source != "code-review":
+    if status == "DROPPED" and source not in {"code-review", "syscall-inputs"}:
         raise InvalidAgentOutput(f"{f.id}: {status} is not a valid model-checking disposition")
 
 
@@ -2976,7 +2978,7 @@ def allocate_rr(cfg: ConfirmConfig, o: Outcome) -> str:
     return rid
 
 
-# ── step 0: consolidate + dedup the two finding sources into candidates.json ──
+# ── step 0: consolidate MC/CR, then inject syscall-input candidates ─────────
 
 
 def _scenario_refs(value: Any) -> set[str]:
@@ -3087,11 +3089,15 @@ def _expected_brief_scenarios(brief: Path) -> set[str] | None:
 def _candidate_fingerprint(cfg: ConfirmConfig) -> str:
     wd = cfg.ws.work_dir(cfg.name)
     spec_dir = wd / "spec"
+    syscall_dir = wd / "harness" / "non-tla"
     files: dict[str, str] = {}
     for label, path in (
         ("findings", spec_dir / "findings.json"),
         ("bug_report", spec_dir / "bug-report.md"),
         ("brief", wd / "modeling-brief.md"),
+        ("syscall_inputs_contract", syscall_dir / "contract.json"),
+        ("syscall_inputs_cases", syscall_dir / "cases.json"),
+        ("syscall_inputs_evidence", syscall_dir / "evidence.json"),
         ("prompt", Path(__file__).resolve().parent / "prompts" / "confirmation" / "consolidate.md"),
         ("schema", SKILLS / "validation-workflow" / "references" / "findings-json-format.md"),
     ):
@@ -3160,11 +3166,90 @@ def _write_candidate_cache(cfg: ConfirmConfig, out: Path) -> None:
     tmp.replace(sidecar)
 
 
+def _inject_syscall_input_candidates(wd: Path, out: Path) -> None:
+    from specula import syscall_inputs
+
+    sidecar_dir = wd / "harness" / "non-tla"
+    paths = {
+        "contract": sidecar_dir / "contract.json",
+        "cases": sidecar_dir / "cases.json",
+        "evidence": sidecar_dir / "evidence.json",
+    }
+    present = [label for label, path in paths.items() if path.is_file()]
+    if not present:
+        return
+    if len(present) != len(paths):
+        missing = ", ".join(f"{label}.json" for label in paths if label not in present)
+        _log(f"  WARNING: incomplete syscall-input sidecar; no candidates loaded (missing: {missing})")
+        return
+
+    try:
+        syscall_inputs.validate_evidence_files(
+            paths["contract"],
+            paths["cases"],
+            paths["evidence"],
+            work_dir=wd,
+        )
+        payloads = {label: path.read_bytes() for label, path in paths.items()}
+        cases_doc = json.loads(payloads["cases"])
+        evidence_doc = json.loads(payloads["evidence"])
+        cases_by_id = {str(case["id"]): case for case in cases_doc["cases"]}
+        digests = {f"{label}_sha256": hashlib.sha256(payload).hexdigest() for label, payload in payloads.items()}
+        injected: list[dict[str, Any]] = []
+        for execution in evidence_doc["executions"]:
+            if execution["status"] != "candidate":
+                continue
+            case_id = str(execution["case_id"])
+            oracle = str(execution["oracle"])
+            observations = execution["observations"]
+            observation_summary = json.dumps(
+                observations,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            injected.append(
+                {
+                    "id": f"SI-{len(injected) + 1}",
+                    "source": "syscall-inputs",
+                    "title": f"Syscall-input candidate {case_id} ({oracle})",
+                    "summary": f"Case {case_id} was marked candidate by oracle {oracle}: {observation_summary}",
+                    "scenario": f"Materialize abstract syscall-input case {case_id} through the real syscall path.",
+                    "severity": None,
+                    "invariant": None,
+                    "config": None,
+                    "counterexample": None,
+                    "affected_code": [],
+                    "case_id": case_id,
+                    "oracle": oracle,
+                    "observations": observations,
+                    "evidence": execution["evidence"],
+                    **digests,
+                    "target": evidence_doc["target"],
+                    "case": cases_by_id[case_id],
+                }
+            )
+    except syscall_inputs.ArtifactError as exc:
+        _log(f"  WARNING: invalid syscall-input sidecar; no candidates loaded: {exc}")
+        return
+    except (IndexError, KeyError, OSError, TypeError, UnicodeError, ValueError) as exc:
+        _log(f"  WARNING: invalid syscall-input sidecar; no candidates loaded: {exc}")
+        return
+
+    doc = json.loads(out.read_text())
+    doc["findings"] = [
+        finding for finding in doc["findings"] if not str(finding.get("id", "")).startswith("SI-")
+    ]
+    doc["findings"].extend(injected)
+    out.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
+
+
 def consolidate(cfg: ConfirmConfig) -> None:
     """Phase-4 step 0: one agent merges MC (bug-report/findings.json) with
-    code-review Scenarios (modeling-brief) and dedups them into candidates.json.
-    Idempotent: a present-and-valid candidates.json is reused. Raises
-    RateLimited on exit 75; raises RuntimeError if the output is missing/invalid."""
+    code-review Scenarios (modeling-brief) and dedups them into candidates.json;
+    the dispatcher then injects validated syscall-input candidates. Idempotent: a
+    present-and-valid candidates.json is reused. Raises RateLimited on exit 75;
+    raises RuntimeError if the output is missing/invalid."""
     wd = cfg.ws.work_dir(cfg.name)
     spec_dir = wd / "spec"
     out = spec_dir / "candidates.json"
@@ -3172,6 +3257,7 @@ def consolidate(cfg: ConfirmConfig) -> None:
     brief = wd / "modeling-brief.md"
     external_candidates = (
         out.is_file()
+        and not (spec_dir / _CANDIDATE_CACHE).is_file()
         and not (spec_dir / "findings.json").is_file()
         and not (spec_dir / "bug-report.md").is_file()
         and not brief.is_file()
@@ -3255,6 +3341,8 @@ def consolidate(cfg: ConfirmConfig) -> None:
         if out.is_file():
             out.unlink()  # drop the invalid file so load_findings does not choke on it
         raise ConsolidateFailed(f"no valid candidates.json for {cfg.name}: {errs[0]}")
+    if not external_candidates:
+        _inject_syscall_input_candidates(wd, out)
     _write_candidate_cache(cfg, out)
     resumelib.complete_turn(resume_logical, allow_previous_owner=resumelib.manual_mode())
     doc = json.loads(out.read_text())
@@ -3305,7 +3393,7 @@ def aggregate(cfg: ConfirmConfig, outcomes: list[Outcome]) -> None:
     the canonical Phase-4 deliverable the classification phase (Phase 4b) and the
     repair loop read; A/B isolation is handled by the run dir, not by a separate
     filename. Headers are ``## Entry N:`` (integer N, table order) so Phase 4b's
-    "one row per entry header" parsing aligns; the finding id (MC-1 / CR-2) is
+    "one row per entry header" parsing aligns; the finding id (MC-1 / CR-2 / SI-3) is
     carried as a body field and a table column."""
     report = cfg.ws.work_dir(cfg.name) / "confirmed-bugs.md"
 
@@ -3492,6 +3580,8 @@ def _prior_report_catalog(cfg: ConfirmConfig) -> tuple[list[dict[str, Any]], lis
             source = "model-checking"
         elif source_claim.startswith("code review") or finding_id.startswith("CR-"):
             source = "code-review"
+        elif source_claim.startswith(("si", "syscall-input")) or finding_id.startswith("SI-"):
+            source = "syscall-inputs"
         else:
             raise ConfirmationFailed(f"legacy confirmation Entry {bug_no} has no usable Source")
         if status == "PENDING REPAIR" and source != "model-checking":
@@ -3550,8 +3640,8 @@ def _prepare_repair_findings(cfg: ConfirmConfig) -> tuple[list[Finding], list[Fi
     """Load current Phase-3 violations and merge them into the old catalog.
 
     The returned first list is the *only* dispatch set. The second is the
-    cumulative catalog used to retain prior code-review/model-checking outcomes
-    in the report and to keep stable entry ordering.
+    cumulative catalog used to retain prior code-review, model-checking, and
+    syscall-inputs outcomes in the report and to keep stable entry ordering.
     """
     wd = cfg.ws.work_dir(cfg.name).absolute()
     spec_dir = wd / "spec"

@@ -44,13 +44,14 @@ system, not just this env. It survives only if the argument is sound AND honestl
 labelled not-reproduced.
 
 When you defeat a finding on a bar, push for the RIGHT verdict by source, not
-just removal: a **code-review** finding → `FALSE POSITIVE`; an **MC** finding →
-`PENDING REPAIR` (the counterexample is a model artifact — unreachable state means
-`FAULT_MODEL`/`SPEC_REPAIR`, no consequence means `INVARIANT`), because a spurious
-CE is a spec defect to fix, not a bug to keep. **An MC finding is NEVER `FALSE
-POSITIVE` or `DROPPED`** — those are code-review-only outcomes. When an MC finding
-is not a confirmed live bug, its only verdicts are `MASKED`, `ENV_LIMITED`,
-`PENDING REPAIR`, or `NEEDS MORE INFO`; do not push it (or agree) to `FALSE POSITIVE`.
+just removal: a **code-review or syscall-inputs** finding → `FALSE POSITIVE`; an
+**MC** finding → `PENDING REPAIR` (the counterexample is a model artifact —
+unreachable state means `FAULT_MODEL`/`SPEC_REPAIR`, no consequence means
+`INVARIANT`), because a spurious CE is a spec defect to fix, not a bug to keep.
+**An MC finding is NEVER `FALSE POSITIVE` or `DROPPED`** — those are
+code-review/syscall-inputs-only outcomes. When an MC finding is not a confirmed
+live bug, its only verdicts are `MASKED`, `ENV_LIMITED`, `PENDING REPAIR`, or
+`NEEDS MORE INFO`; do not push it (or agree) to `FALSE POSITIVE`.
 
 ## Investigate to settle the decisive question
 The turn-1 "no fresh research" rule does NOT bind you when the decisive question

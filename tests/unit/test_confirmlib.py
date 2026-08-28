@@ -31,6 +31,7 @@ from specula import phaselib as PhaseLib
 from specula import pipelinelib as PL
 from specula import prompts as P
 from specula import resumelib
+from specula import syscall_inputs
 from specula.phaselib import Workspace
 
 EVIDENCE = "The investigation inspected the real call path and captured concrete observed behavior."
@@ -147,6 +148,73 @@ class ConfirmCase(unittest.TestCase):
         fdir = ws.work_dir(name) / "confirmation" / fid
         return C.Finding({"id": fid, "title": "t", "summary": "s"}, fdir)
 
+    def syscall_sidecar(
+        self,
+        ws: Workspace,
+        name: str,
+        statuses: tuple[str, ...] = ("candidate", "pass", "candidate"),
+    ) -> tuple[dict[str, Path], dict[str, Any], dict[str, Any]]:
+        wd = ws.work_dir(name)
+        sidecar = wd / "harness" / "non-tla"
+        sidecar.mkdir(parents=True, exist_ok=True)
+        contract = {
+            "schema_version": 1,
+            "artifact": "syscall-input-contract",
+            "campaign": "confirmation-test",
+            "page_size": 16,
+            "max_cases": 20,
+            "syscalls": [
+                {
+                    "name": "copy_out",
+                    "direction": "kernel-to-user",
+                    "shape": "buffer",
+                    "lengths": [1, 2, 3],
+                    "pointer_regions": ["valid"],
+                }
+            ],
+        }
+        paths = {label: sidecar / f"{label}.json" for label in ("contract", "cases", "evidence")}
+        paths["contract"].write_text(json.dumps(contract))
+        cases = syscall_inputs.generate_cases(contract)
+        paths["cases"].write_text(json.dumps(cases, indent=2, sort_keys=True) + "\n")
+        executions: list[dict[str, Any]] = []
+        for index, status in enumerate(statuses):
+            evidence_relative = f"harness/non-tla/evidence/run-{index}.ndjson"
+            evidence_file = wd / evidence_relative
+            evidence_file.parent.mkdir(parents=True, exist_ok=True)
+            evidence_file.write_text(f'{{"execution":{index}}}\n')
+            executions.append(
+                {
+                    "case_id": cases["cases"][index]["id"],
+                    "status": status,
+                    "oracle": f"boundary-oracle-{index}",
+                    "observations": {
+                        "result": {"return": index, "errno": None},
+                        "progress": {
+                            "attempted": index + 1,
+                            "copied": index,
+                            "committed": index,
+                            "reported": index,
+                            "offset_advanced": index,
+                        },
+                        "state_before": {"index": index},
+                        "state_after": {"index": index + 1},
+                    },
+                    "evidence": [evidence_relative],
+                }
+            )
+        evidence = {
+            "schema_version": 1,
+            "artifact": "syscall-input-evidence",
+            "campaign": "confirmation-test",
+            "contract_sha256": cases["contract_sha256"],
+            "cases_sha256": hashlib.sha256(paths["cases"].read_bytes()).hexdigest(),
+            "target": {"name": "target-under-test", "identity": "commit-abc", "smp": 2},
+            "executions": executions,
+        }
+        paths["evidence"].write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+        return paths, cases, evidence
+
 
 class TestVerdict(ConfirmCase):
     def test_parse_verdict(self) -> None:
@@ -156,6 +224,17 @@ class TestVerdict(ConfirmCase):
         self.assertIsNone(C.parse_verdict("VERDICT: not-a-status"))
         # last VERDICT line wins
         self.assertEqual(C.parse_verdict("VERDICT: DROPPED\nVERDICT: FALSE POSITIVE"), "FALSE POSITIVE")
+
+    def test_syscall_input_source_routes_like_code_review(self) -> None:
+        root = Path(self.tmp)
+        explicit = C.Finding({"id": "SI-1", "source": "syscall-inputs"}, root / "SI-1")
+        inferred = C.Finding({"id": "SI-2", "source": ""}, root / "SI-2")
+
+        self.assertEqual(C._source_kind(explicit), "syscall-inputs")
+        self.assertEqual(C._source_kind(inferred), "syscall-inputs")
+        C._validate_status_source(explicit, "DROPPED")
+        with self.assertRaisesRegex(C.InvalidAgentOutput, "only valid for model-checking"):
+            C._validate_status_source(explicit, "PENDING REPAIR")
 
 
 class TestConfirmConfigCompatibility(ConfirmCase):
@@ -353,6 +432,152 @@ class TestValidateCandidates(ConfirmCase):
         errs = C._validate_candidates(p)
         self.assertTrue(any("filesystem-safe" in e for e in errs))
         self.assertTrue(any("source not in" in e for e in errs))
+
+    def test_syscall_input_source_is_valid(self) -> None:
+        p = Path(self.tmp) / "c.json"
+        p.write_text(json.dumps({"findings": [{"id": "SI-1", "source": "syscall-inputs"}]}))
+        self.assertEqual(C._validate_candidates(p), [])
+
+
+class TestSyscallInputCandidates(ConfirmCase):
+    def test_valid_sidecar_injects_candidates_and_cache_tracks_changes(self) -> None:
+        ws = Workspace(["T"])
+        spec = ws.work_dir("T") / "spec"
+        spec.mkdir(parents=True)
+        paths, cases, evidence = self.syscall_sidecar(ws, "T")
+        cfg = self.cfg(ws, "T")
+        mc = {"id": "MC-1", "source": "model-checking", "title": "mc", "summary": "mc summary"}
+        cr = {"id": "CR-1", "source": "code-review", "title": "cr", "summary": "cr summary"}
+        stale = {"id": "SI-99", "source": "syscall-inputs", "title": "stale", "summary": "stale"}
+        calls = 0
+
+        def agent(*_args: object, **_kwargs: object) -> tuple[int, str]:
+            nonlocal calls
+            calls += 1
+            (spec / "candidates.json").write_text(
+                json.dumps({"generated_by": "consolidate", "findings": [mc, stale, cr]})
+            )
+            return 0, ""
+
+        with mock.patch.object(C, "run_agent_blocking", agent):
+            C.consolidate(cfg)
+
+        out = spec / "candidates.json"
+        doc = json.loads(out.read_text())
+        self.assertEqual([finding["id"] for finding in doc["findings"]], ["MC-1", "CR-1", "SI-1", "SI-2"])
+        self.assertEqual(doc["findings"][:2], [mc, cr])
+        injected = doc["findings"][2:]
+        for finding, execution_index in zip(injected, (0, 2), strict=True):
+            execution = evidence["executions"][execution_index]
+            self.assertEqual(finding["source"], "syscall-inputs")
+            self.assertEqual(finding["case_id"], execution["case_id"])
+            self.assertEqual(finding["oracle"], execution["oracle"])
+            self.assertEqual(finding["observations"], execution["observations"])
+            self.assertEqual(finding["evidence"], execution["evidence"])
+            self.assertEqual(finding["target"], evidence["target"])
+            self.assertEqual(finding["case"], cases["cases"][execution_index])
+            self.assertEqual(finding["severity"], None)
+            self.assertEqual(
+                [finding[field] for field in ("invariant", "config", "counterexample")],
+                [None, None, None],
+            )
+            for label, path in paths.items():
+                self.assertEqual(finding[f"{label}_sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+
+        first_bytes = out.read_bytes()
+        with mock.patch.object(C, "run_agent_blocking", _boom):
+            C.consolidate(cfg)
+        self.assertEqual(out.read_bytes(), first_bytes)
+
+        evidence["executions"][2]["observations"]["result"]["return"] = 99
+        paths["evidence"].write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+        with mock.patch.object(C, "run_agent_blocking", agent):
+            C.consolidate(cfg)
+
+        refreshed = json.loads(out.read_text())["findings"]
+        self.assertEqual(calls, 2)
+        self.assertEqual([finding["id"] for finding in refreshed], ["MC-1", "CR-1", "SI-1", "SI-2"])
+        self.assertEqual(refreshed[-1]["observations"]["result"]["return"], 99)
+        self.assertNotEqual(refreshed[-1]["evidence_sha256"], injected[-1]["evidence_sha256"])
+
+    def test_no_sidecar_preserves_agent_output_bytes_without_warning(self) -> None:
+        ws = Workspace(["T"])
+        spec = ws.work_dir("T") / "spec"
+        spec.mkdir(parents=True)
+        payload = b'{"generated_by":"consolidate","findings":[{"id":"CR-1","source":"code-review"}]}\n'
+
+        def agent(*_args: object, **_kwargs: object) -> tuple[int, str]:
+            (spec / "candidates.json").write_bytes(payload)
+            return 0, ""
+
+        with mock.patch.object(C, "run_agent_blocking", agent), mock.patch.object(C, "_log") as log:
+            C.consolidate(self.cfg(ws, "T"))
+
+        self.assertEqual((spec / "candidates.json").read_bytes(), payload)
+        self.assertFalse(any("syscall-input sidecar" in str(call.args[0]) for call in log.call_args_list))
+
+    def test_partial_sidecar_warns_and_keeps_mc_cr_candidates(self) -> None:
+        ws = Workspace(["T"])
+        wd = ws.work_dir("T")
+        spec = wd / "spec"
+        spec.mkdir(parents=True)
+        sidecar = wd / "harness" / "non-tla"
+        sidecar.mkdir(parents=True)
+        (sidecar / "evidence.json").write_text("{}\n")
+        base = [
+            {"id": "MC-1", "source": "model-checking"},
+            {"id": "CR-1", "source": "code-review"},
+        ]
+
+        def agent(*_args: object, **_kwargs: object) -> tuple[int, str]:
+            (spec / "candidates.json").write_text(json.dumps({"findings": base}))
+            return 0, ""
+
+        with mock.patch.object(C, "run_agent_blocking", agent), mock.patch.object(C, "_log") as log:
+            C.consolidate(self.cfg(ws, "T"))
+
+        self.assertEqual(json.loads((spec / "candidates.json").read_text())["findings"], base)
+        messages = [str(call.args[0]) for call in log.call_args_list]
+        self.assertTrue(any("incomplete syscall-input sidecar" in message for message in messages))
+        self.assertTrue(any("contract.json, cases.json" in message for message in messages))
+
+    def test_invalid_sidecar_warns_and_keeps_mc_cr_candidates(self) -> None:
+        ws = Workspace(["T"])
+        spec = ws.work_dir("T") / "spec"
+        spec.mkdir(parents=True)
+        paths, _cases, evidence = self.syscall_sidecar(ws, "T")
+        evidence["cases_sha256"] = "0" * 64
+        paths["evidence"].write_text(json.dumps(evidence))
+        base = [{"id": "CR-1", "source": "code-review"}]
+
+        def agent(*_args: object, **_kwargs: object) -> tuple[int, str]:
+            (spec / "candidates.json").write_text(json.dumps({"findings": base}))
+            return 0, ""
+
+        with mock.patch.object(C, "run_agent_blocking", agent), mock.patch.object(C, "_log") as log:
+            C.consolidate(self.cfg(ws, "T"))
+
+        self.assertEqual(json.loads((spec / "candidates.json").read_text())["findings"], base)
+        messages = [str(call.args[0]) for call in log.call_args_list]
+        self.assertTrue(
+            any(
+                "invalid syscall-input sidecar; no candidates loaded: " in message
+                and "evidence.cases_sha256 does not match cases file" in message
+                for message in messages
+            )
+        )
+
+    def test_external_candidates_do_not_consume_local_sidecar(self) -> None:
+        external = [{"id": "CR-1", "source": "code-review", "title": "external"}]
+        ws = self.seed("T", external)
+        self.syscall_sidecar(ws, "T", statuses=("candidate",))
+        out = ws.work_dir("T") / "spec" / "candidates.json"
+        original = out.read_bytes()
+
+        with mock.patch.object(C, "run_agent_blocking", _boom):
+            C.consolidate(self.cfg(ws, "T"))
+
+        self.assertEqual(out.read_bytes(), original)
 
 
 class TestDriver(ConfirmCase):
@@ -2272,6 +2497,31 @@ class TestPromptExtraAndLog(ConfirmCase):
                 text,
             )
 
+        reproduce = (P.PROMPTS_DIR / "confirmation" / "reproduce.md").read_text()
+        self.assertIn(
+            "| SI | `MASKED`, `ENV_LIMITED`, `FALSE POSITIVE`, `DROPPED`, `NEEDS MORE INFO` "
+            "| `PENDING REPAIR` |",
+            reproduce,
+        )
+        self.assertIn("`- **Source**: MC`", reproduce)
+        self.assertIn("`SI` (syscall-inputs sidecar)", reproduce)
+        self.assertIn("publicly materialize the abstract case", reproduce)
+        self.assertIn("cite the `case_id`", reproduce)
+        self.assertIn("never write a verdict back into `evidence.json`", re.sub(r"\s+", " ", reproduce))
+
+        for template in ("challenge", "defend"):
+            text = (P.PROMPTS_DIR / "confirmation" / f"{template}.md").read_text()
+            self.assertIn("code-review or syscall-inputs", text)
+
+        skill = C.SKILLS / "bug-confirmation"
+        guide = (skill / "guide.md").read_text()
+        investigation = (skill / "phases" / "01-investigation.md").read_text()
+        reproduction = (skill / "phases" / "02-reproduction.md").read_text()
+        self.assertIn("`SI` for a syscall-input sidecar candidate", guide)
+        self.assertIn("Code-review- or syscall-inputs-sourced", guide)
+        self.assertIn("Code-review- or syscall-inputs-sourced", investigation)
+        self.assertIn("code-review or syscall-inputs finding", reproduction)
+
     def test_legacy_allocator_uses_finding_id_and_treats_bug_number_as_display_only(self) -> None:
         prompt = (P.PROMPTS_DIR / "confirmation" / "orchestrate.md").read_text()
         self.assertIn("finding_id: <candidate-id>", prompt)
@@ -2829,6 +3079,26 @@ class TestValidationContracts(ConfirmCase):
             )
         )
         self.assertTrue(any("duplicate id" in e for e in C._validate_candidates(p)))
+
+    def test_legacy_report_import_recognizes_syscall_input_source(self) -> None:
+        ws = Workspace(["T"])
+        wd = ws.work_dir("T")
+        wd.mkdir(parents=True)
+        (wd / "confirmed-bugs.md").write_text(
+            "| Entry | Finding | Status | Counts as final bug? |\n"
+            "|---|---|---|---|\n"
+            "| 1 | SI-1 | DROPPED | no |\n\n"
+            "## Entry 1: syscall-input candidate\n\n"
+            "- **Finding ID**: SI-1\n"
+            "- **Status**: DROPPED\n"
+            "- **Source**: SI\n\n"
+            "The public syscall path reproduced an already-reported mechanism.\n"
+        )
+
+        catalog, outcomes = C._prior_report_catalog(self.cfg(ws, "T"))
+
+        self.assertEqual(catalog[0]["source"], "syscall-inputs")
+        self.assertEqual(outcomes[0].status, "DROPPED")
 
     def test_completeness_and_cosmetics_relaxed(self) -> None:
         # Relaxed: MC-completeness, one-line title, and MC-/CR- prefixes no longer

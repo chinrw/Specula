@@ -3072,6 +3072,10 @@ Prerequisites:
             report=str(wd / "confirmed-bugs.md"),
             bug_confirmation_skill=prompt_skill_ids("bug-confirmation"),
         )
+        prompt += (
+            "\nSyscall-input sidecar candidates (`SI-*`) follow the bug-confirmation skill's syscall-inputs "
+            "decision-table row: use the Code Review dispositions and never `PENDING REPAIR`.\n"
+        )
         return self._with_extra(ws, name, prompt)
 
     def summarize(self, ws: Workspace, names: list[str]) -> None:

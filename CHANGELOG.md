@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Added `specula syscall-inputs` for deterministic usercopy-boundary and structured-iovec case generation, with contract-bound non-TLA evidence validation.
 - Added optional `harness/non-tla/` Phase 2.5 sidecars without changing the model-checking-only `spec/findings.json` contract.
+- Routed validated syscall-input sidecar candidates through the default per-finding confirmation fan-out without modifying sidecar evidence.
 
 ## [1.1.0] - 2026-08-13
 

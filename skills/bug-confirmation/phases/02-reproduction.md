@@ -1,6 +1,6 @@
 # Phase 2: Mandatory Reproduction Attempt
 
-**This phase decides the verdict.** Phase 1 only gathered evidence (in `investigation.md`) and judged nothing (except the code-review × known drop). Here you attempt reproduction, then choose exactly ONE verdict from the decision table (`guide.md`) using the Phase-1 investigation record **plus** the reproduction result together.
+**This phase decides the verdict.** Phase 1 only gathered evidence (in `investigation.md`) and judged nothing (except the code-review/syscall-inputs × known drop). Here you attempt reproduction, then choose exactly ONE verdict from the decision table (`guide.md`) using the Phase-1 investigation record **plus** the reproduction result together.
 
 **Every bug must attempt reproduction.** New, known, or historical — no exemption. Work through the escalation ladder; either you trigger the live harm (→ `REPRODUCED`) or you do not.
 
@@ -50,7 +50,7 @@ Your goal is to either **prove the bug manifests** (trigger it) or **prove the e
 
 1. **Level 0 — Pure black-box.** Use only public APIs, normal operations, no failpoints. Always start here.
 2. **Level 1 — Timing assistance.** Add `sleep()` calls or use system-provided test hooks (e.g., `configureFailPoint`, `FAIL_POINT_DEFINE`) to widen race windows. The system logic is unchanged; you're only controlling timing.
-3. **Level 2 — State injection.** Inject the pre-condition state and verify the buggy code path handles it incorrectly. The injected state MUST be one the real system can actually reach: show the real-API call sequence that produces it, or cite the exact model-counterexample step it instantiates. Injecting a state the real system can never reach (an impossible / hand-built pre-condition — e.g. two peers simultaneously in a mutually-exclusive role, a mock that emits a value a real peer never sends, **or feeding an input/channel whose only producer is dead code**) is unsound and does not reproduce anything. When that unreachability is the finding's real story, route it: an **MC finding** means the counterexample needs a state the code cannot reach — hand back to repair (`FAULT_MODEL` / `SPEC_REPAIR`, see below); a **code-review finding** is a FALSE POSITIVE. Clearly document that this is a state-injection test, not an end-to-end trigger.
+3. **Level 2 — State injection.** Inject the pre-condition state and verify the buggy code path handles it incorrectly. The injected state MUST be one the real system can actually reach: show the real-API call sequence that produces it, or cite the exact model-counterexample step it instantiates. Injecting a state the real system can never reach (an impossible / hand-built pre-condition — e.g. two peers simultaneously in a mutually-exclusive role, a mock that emits a value a real peer never sends, **or feeding an input/channel whose only producer is dead code**) is unsound and does not reproduce anything. When that unreachability is the finding's real story, route it: an **MC finding** means the counterexample needs a state the code cannot reach — hand back to repair (`FAULT_MODEL` / `SPEC_REPAIR`, see below); a **code-review or syscall-inputs finding** is a FALSE POSITIVE. Clearly document that this is a state-injection test, not an end-to-end trigger.
 4. **Level 3 — Minimal code modification.** Add a small delay (`usleep`, `sleep`) inside the system's source code at the exact crash window location to make the race deterministic. Document the modification precisely.
 
 Walk the ladder strictly in order. Escalate ONLY when the current level genuinely failed; document why. **Do not stop at Level 0 failure.** If Level 3 also fails, document the attempts and choose the final verdict from the decision table.
@@ -59,7 +59,7 @@ For known/historical bugs that already have a working reproduction in the upstre
 
 ## Verify you triggered the RIGHT bug
 
-After triggering anomalous behavior, verify it matches the MC counterexample (or the code-review claim). Compare:
+After triggering anomalous behavior, verify it matches the MC counterexample, code-review claim, or syscall-inputs oracle. Compare:
 
 - The sequence of operations matches the MC trace (same actions, same order)
 - The violated invariant is the same one MC found
@@ -82,7 +82,7 @@ When reporting ENV_LIMITED:
 - The four levels attempted (0 through 3); for each: what was tried, what happened, why it didn't trigger
 - The artifact/bootstrap preflight: paths and logs searched, provenance checked, and compatible artifacts or known-good recipes tried or rejected
 - Your conclusion: is the bug real but hard to trigger (timing-sensitive, requires specific cluster topology, needs a fault not in the test framework), or do you now believe it's a false positive given the failed escalation?
-- Whether you can give a SOUND argument that the consequence still occurs in production despite the failed trigger (naming the environment limitation that blocks it here) — or whether, absent that argument and any reachable consequence, it is a FALSE POSITIVE (code-review) / a model-repair signal (MC)
+- Whether you can give a SOUND argument that the consequence still occurs in production despite the failed trigger (naming the environment limitation that blocks it here) — or whether, absent that argument and any reachable consequence, it is a FALSE POSITIVE (code-review/syscall-inputs) / a model-repair signal (MC)
 
 ## When a counterexample is an artifact — hand back to repair (confirmation loop)
 

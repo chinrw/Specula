@@ -3,9 +3,9 @@
 Gather the evidence needed to decide the finding's verdict later: what the code
 actually does, whether the buggy path is reachable, and what the developers know
 about it. **Phase 1 records; it does not judge.** With ONE exception (the
-code-review × known drop in Step 3), you do NOT decide here whether it is a bug —
-that verdict is chosen *after* Phase 2 (reproduction), from the full evidence. Do
-not prejudge; investigate every finding.
+code-review/syscall-inputs × known drop in Step 3), you do NOT decide here whether
+it is a bug — that verdict is chosen *after* Phase 2 (reproduction), from the full
+evidence. Do not prejudge; investigate every finding.
 
 **Write everything to `investigation.md` in this finding's work directory** — the
 cited code, call chain, reachability, safeguards, developer evidence, and
@@ -56,9 +56,9 @@ suspected it:
 
 Then apply the single pre-filter:
 
-- **Code-review-sourced AND an existing issue/PR/CVE has already reported this exact defect** → **DROP** now: a code-review reproduction of an already-reported bug is a duplicate, not a new bug. Record `Status: DROPPED (code-review × known, cite: <URL/dataset-id>)` and write no `repro/` test.
+- **Code-review- or syscall-inputs-sourced AND an existing issue/PR/CVE has already reported this exact defect** → **DROP** now: reproducing an already-reported non-MC bug is a duplicate, not a new bug. Record `Status: DROPPED (<source> × known, cite: <URL/dataset-id>)` and write no `repro/` test.
 - **Otherwise** (MC-found with an actual counterexample — new or known; or any finding not already reported) → proceed to Phase 2. Do not drop; the verdict is decided after reproduction.
 
 ---
 
-Proceed to Phase 2 with the evidence recorded in `investigation.md`. Decide the verdict AFTER reproduction — except the code-review × known drop above.
+Proceed to Phase 2 with the evidence recorded in `investigation.md`. Decide the verdict AFTER reproduction — except the code-review/syscall-inputs × known drop above.

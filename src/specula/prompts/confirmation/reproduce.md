@@ -10,12 +10,18 @@ table. Execute the skill — do not restate it.
 ## Output (the dispatcher parses these)
 - Write and ACTUALLY EXECUTE `repro/test_bug{{finding_id}}_*`.
 - Header fields:
-  - `- **Source**: MC` (real counterexample) or `Code Review` (no-violation / code-review)
-  - `- **Novelty**: NEW` or `KNOWN (cite: <URL/dataset-id>; fix-status: unfixed|fixed)` — set from evidence, not by default (see the skill); Code Review AND known → `VERDICT: DROPPED`. Before writing `NEW`, do at least one prior-report search — upstream issues **and recently merged/closed PRs** (a fix that landed days ago still makes it KNOWN); `NEW` means you looked and found nothing for THIS mechanism, not that you skipped looking. (Do this via the issue tracker / git history only — do NOT open `bug-report.md` or other findings, per the "Do NOT" list below.)
+  - `- **Source**: MC` (real counterexample), `Code Review` (no-violation / code-review), or `SI` (syscall-inputs sidecar)
+  - `- **Novelty**: NEW` or `KNOWN (cite: <URL/dataset-id>; fix-status: unfixed|fixed)` — set from evidence, not by default (see the skill); Code Review or SI AND known → `VERDICT: DROPPED`. Before writing `NEW`, do at least one prior-report search — upstream issues **and recently merged/closed PRs** (a fix that landed days ago still makes it KNOWN); `NEW` means you looked and found nothing for THIS mechanism, not that you skipped looking. (Do this via the issue tracker / git history only — do NOT open `bug-report.md` or other findings, per the "Do NOT" list below.)
   - `- **Location**: file:line`
 - Body sections (they become the verdict body): `## Description`, `## Trigger scenario`, `## Developer intent`, `## Reproduction result` (paste real output), `## Recommendation`.
 - End your ENTIRE response with one line: `VERDICT: <one of: {{canon}}>`.
 - For `PENDING REPAIR`: also write the semantic draft `{{fdir}}/repair-request.body.md` using the installed skill's repair-request format. It MUST contain YAML frontmatter with only `target:` (SPEC_REPAIR | FAULT_MODEL | INVARIANT), `counterexample:`, and a concrete `scope:` (`actions`, `invariants`, `hunt_cfgs`, `fault_actions`), followed by non-empty `## Trigger` and cited `## Evidence`, plus optional `## Proposed change`. Do NOT include `id`, `bug_id`, `finding_id`, `allocation_key`, `status`, `round`, or `## History`; the dispatcher owns those and is the only writer of the shared `repair-requests/` queue.
+
+For a syscall-inputs finding, publicly materialize the abstract case recorded in
+the finding data, including its guard-page or boundary-crossing mapping, and
+exercise the real syscall path; cite the `case_id`. The sidecar under
+`harness/non-tla/` is immutable evidence: never edit it, and never write a
+verdict back into `evidence.json`.
 
 ## Before any `VERDICT: REPRODUCED` — answer this checklist in your response
 State each answer explicitly (it will be checked against your captured output):
@@ -30,8 +36,9 @@ If you cannot honestly answer these in the bug's favour, do NOT manufacture a pa
 |---|---|---|
 | MC | `MASKED`, `ENV_LIMITED`, `PENDING REPAIR`, `NEEDS MORE INFO` | `FALSE POSITIVE`, `DROPPED` |
 | Code Review | `MASKED`, `ENV_LIMITED`, `FALSE POSITIVE`, `DROPPED`, `NEEDS MORE INFO` | `PENDING REPAIR` |
+| SI | `MASKED`, `ENV_LIMITED`, `FALSE POSITIVE`, `DROPPED`, `NEEDS MORE INFO` | `PENDING REPAIR` |
 
-`DROPPED` remains only for the code-review × already-reported pre-filter. Every honest outcome beats a fabricated `REPRODUCED`.
+`DROPPED` remains only for the code-review/syscall-inputs × already-reported pre-filter. Every honest outcome beats a fabricated `REPRODUCED`.
 
 ## Do NOT
 - Do not read or touch other findings, the spec files, `bug-report.md`, `confirmed-bugs.md`, or the shared `repair-requests/` queue. Do not allocate an RR number yourself.

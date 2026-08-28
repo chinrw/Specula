@@ -525,6 +525,8 @@ class TestDryRunCommand(PhaseCase):
         self.assertIn("## Entry N: <title>", body)
         self.assertIn("Number sections consecutively from 1", body)
         self.assertIn("exactly one row and one section for each entry", body)
+        self.assertIn("Syscall-input sidecar candidates (`SI-*`)", body)
+        self.assertIn("use the Code Review dispositions and never `PENDING REPAIR`", body)
 
     def test_bug_classification_uses_current_phase4_status_contract(self) -> None:
         rc, out = self.dry_run(BY_KEY["bug_classification"])
