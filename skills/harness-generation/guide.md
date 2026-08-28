@@ -54,6 +54,10 @@ Before starting instrumentation, determine which category the target system belo
 
 When in doubt, default to Category A. Only use the timebox approach when probe effect is a real concern.
 
+### Syscall user-input overlay
+
+Category does not describe syscall input shape. When the campaign includes user-controlled pointers, fallible user copies, or structured inputs such as iovecs, also read `references/syscall-input-contracts.md` and run that workflow. Its generated cases and evidence sidecar supplement the category's ordinary trace strategy.
+
 ---
 
 ## Input
@@ -74,6 +78,9 @@ When in doubt, default to Category A. Only use the timebox approach when probe e
 | Run script | `harness/run.sh` | One-command: apply instrumentation, build, run tests, collect traces |
 | Traces | `traces/*.ndjson` | NDJSON trace files from test runs |
 | Instrumentation guide | `harness/INSTRUMENTATION.md` | Brief doc for Phase 3 agent to adjust instrumentation if needed |
+| Syscall-input contract | `harness/non-tla/contract.json` | Optional reviewed usercopy and structured-input scope |
+| Generated syscall cases | `harness/non-tla/cases.json` | Optional deterministic usercopy and structured-input cases |
+| Non-TLA evidence | `harness/non-tla/evidence.json` | Optional real-execution sidecar, kept separate from model-checking findings |
 
 ---
 
@@ -188,6 +195,8 @@ Write test code that exercises the protocol code paths to generate trace events.
 - Aim for 2-4 test scenarios covering: normal operation, fault injection (crash, network partition), edge cases from the Modeling Brief's Scenarios
 - Each scenario writes to a separate trace file: `traces/<scenario>.ndjson`
 
+For a syscall user-input campaign, generate cases through `specula syscall-inputs`; then make the target-language scenario adapter consume those cases. Preserve generated object IDs and alias edges. Record real observations in the non-TLA evidence sidecar instead of hand-selecting pointer layouts from known findings.
+
 ---
 
 ## Step 5: Write run.sh
@@ -234,6 +243,7 @@ Must be executable from `.specula-output/`: `cd .specula-output && bash harness/
    run_trace_validation(spec_file="Trace.tla", config_file="Trace.cfg", trace_file="../traces/<name>.ndjson", work_dir="spec/")
    ```
 8. If validation fails, fix instrumentation and re-run. Minor fixes are expected at this stage.
+9. When `harness/non-tla/contract.json` exists, validate the generated cases and evidence against the exact contract. Record truncated, unexecuted, unsupported, and harness-error counts; these are coverage limits, not passes.
 
 ---
 
@@ -262,12 +272,15 @@ Keep it short and practical — the Phase 3 agent needs to make small adjustment
 6. **run.sh must work end-to-end.** Anyone should be able to reproduce traces with a single command.
 7. **Never use `ScheduleWakeup` / `CronCreate` to wait for builds, tests, or trace generation.** This pipeline runs `claude --print` — any cross-turn timer is silently dropped at `end_turn`, leaving harness work half-done with exit 0. Block within the turn (`Bash` with `wait` / `timeout`). See `../tla-checking-workflow/guide.md` Phase 2 "Batch Mode Constraints."
 8. **Always wrap test/build commands in `timeout N`.** `cargo test`, `make`, language test harnesses — concurrent code in the system-under-test can deadlock. Without an outer `timeout`, a hung test silently consumes the entire phase. Pick N as 5–10× expected runtime, cap at 30 min, treat a fired timeout as a deadlock finding (don't auto-retry). **For any backgrounded long-running job, use `scripts/infra/wait_for_pid.sh --pid-file ... --timeout ...`** — it blocks on the PID and is immune to SIGTERM-without-marker. **For Bash-tool `run_in_background: true` tasks (no PID file), `end_turn` and wait for the task-notification — do not poll the output file or pgrep the process.**
+9. **Generate syscall inputs from the frozen contract.** The deterministic utility owns boundary expansion and alias topology. The target adapter owns only materialization and execution.
+10. **Keep non-TLA evidence in its sidecar.** A sidecar `candidate` is routed to later review and confirmation; it is not a model-checking finding or confirmed bug.
 
 ---
 
 ## Reference Files
 
 - **`references/trace-module-patterns.md`** — Language-specific trace emission templates (Go, Rust, Java)
+- **`references/syscall-input-contracts.md`** — Usercopy boundaries, structured syscall inputs, and non-TLA sidecar workflow
 
 ## Examples
 

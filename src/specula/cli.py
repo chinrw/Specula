@@ -3,14 +3,14 @@
 
 Python port of the repo-root `specula` bash dispatcher (now a thin shim to
 this file); also installed as the `specula` console script by `pip install
--e .`. It is a thin passthrough: every argument after <command> is forwarded
-verbatim to the underlying launch script via exec, so per-phase flags
-(--agent, --artifact, --max-parallel, --dry-run, ...) behave exactly as
-before and `specula <command> --help` shows that script's own help.
+-e .`. Phase-command arguments are forwarded verbatim to their launch scripts,
+so per-phase flags (`--agent`, `--artifact`, `--max-parallel`, `--dry-run`, ...)
+behave exactly as before. Utility commands are handled directly.
 
 Dispatch targets are the bash launch scripts under scripts/ — they need a
-repo checkout, so the console script works from an editable install (or the
-shim from any checkout), not from a plain wheel install.
+repo checkout, so phase commands work from an editable install (or the shim
+from any checkout), not from a plain wheel install. Utility commands run in
+process and do not launch a phase script.
 """
 
 from __future__ import annotations
@@ -18,6 +18,9 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 PROG = "specula"
 VERSION = "1.1.0"
@@ -40,9 +43,13 @@ COMMANDS: list[tuple[str, str, str]] = [
     ("setup", "infra/setup.sh", "Install Specula agent skills + MCP tools"),
 ]
 
+UTILITY_COMMANDS: list[tuple[str, str]] = [
+    ("syscall-inputs", "Generate syscall-input cases and validate non-TLA sidecars"),
+]
+
 
 def help_text() -> str:
-    width = max(len(cmd) for cmd, _, _ in COMMANDS)
+    width = max([len(cmd) for cmd, _, _ in COMMANDS] + [len(cmd) for cmd, _ in UTILITY_COMMANDS])
     lines = [
         f'usage: {PROG} <command> [options] "name|github|lang|reference" [...]',
         "",
@@ -51,10 +58,11 @@ def help_text() -> str:
         "commands:",
     ]
     lines += [f"  {cmd:<{width}}  {desc}" for cmd, _, desc in COMMANDS]
+    lines += [f"  {cmd:<{width}}  {desc}" for cmd, desc in UTILITY_COMMANDS]
     lines += [
         "",
-        "Every argument after <command> is forwarded verbatim to the underlying",
-        f"launch script. Run '{PROG} <command> --help' for a command's full flag set.",
+        "Phase-command arguments are forwarded verbatim to their launch scripts.",
+        f"Run '{PROG} <command> --help' for a command's full flag set.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -74,6 +82,10 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(help_text())
         return 0
     sub, rest = args[0], args[1:]
+    if sub == "syscall-inputs":
+        from specula import syscall_inputs
+
+        return syscall_inputs.main(rest)
     for cmd, script, _ in COMMANDS:
         if sub == cmd:
             return _exec(["bash", str(SCRIPTS_DIR / script), *rest])

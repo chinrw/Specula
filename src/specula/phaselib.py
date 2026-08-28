@@ -39,7 +39,7 @@ if __package__ in (None, ""):
     # this module so process-local launcher state is shared rather than copied.
     sys.modules["specula.phaselib"] = sys.modules[__name__]
 import specula.progress as progress
-from specula import quota, resumelib
+from specula import quota, resumelib, syscall_inputs
 from specula.adapters.utils.policy import POLICY_BLOCKED_RC
 from specula.adapters.utils.transient import TRANSIENT_FAILURE_RC
 from specula.output_index import PIPELINE_LOG_ENV, is_safe_target_name, write_target_index
@@ -2211,7 +2211,7 @@ Prerequisites:
             "log": wd / "harness-gen.log",
             "pid": wd / "harness-gen.pid",
             "prompt": wd / ".harness-gen-prompt.md",
-            "mkdirs": [wd / "harness", wd / "traces"],
+            "mkdirs": [wd / "harness", wd / "harness" / "non-tla", wd / "traces"],
         }
 
     def build_prompt(self, ws: Workspace, target: str) -> str:
@@ -2228,6 +2228,7 @@ You are generating a trace harness for **{name}** — instrumenting the real sou
 - **Instrumentation spec**: {spec_dir}/instrumentation-spec.md
 - **Trace spec**: {spec_dir}/Trace.tla + {spec_dir}/Trace.cfg
 - **Base spec**: {spec_dir}/base.tla (for understanding spec actions)
+- **Modeling brief**: {wd}/modeling-brief.md (for campaign scope and non-TLA routing)
 - **Source code**: {repo_dir}
 
 ## Workflow
@@ -2235,6 +2236,22 @@ You are generating a trace harness for **{name}** — instrumenting the real sou
 Use the installed Specula skill {prompt_skill_ids("harness-generation")}. Read it in full and follow it exactly — it is the single source of methodology (instrument real code, trace format, run.sh, end-to-end validation).
 
 Do everything the skill specifies. Do not add, relax, or override any step here.
+
+## Non-TLA syscall-input track
+
+If the modeling brief or instrumentation plan includes user-controlled syscall pointers,
+fallible user copies, or structured inputs such as iovecs, follow the skill's syscall-input
+workflow in addition to trace generation:
+
+1. Write the reviewed target-neutral contract to `{wd}/harness/non-tla/contract.json`.
+2. Run `specula syscall-inputs generate --contract {wd}/harness/non-tla/contract.json --output {wd}/harness/non-tla/cases.json`.
+3. Materialize and execute those abstract cases against the real target; do not simulate syscall behavior.
+4. Record observations in `{wd}/harness/non-tla/evidence.json`, then run
+   `specula syscall-inputs validate {wd}/harness/non-tla/evidence.json --contract {wd}/harness/non-tla/contract.json --cases {wd}/harness/non-tla/cases.json --work-dir {wd}`.
+
+The sidecar is candidate evidence and must not be written to `spec/findings.json`.
+Do not derive cases from known findings, fixing patches, benchmark labels, or held-out source locations.
+If the campaign has no syscall user-input contract, leave `harness/non-tla/` empty and continue the ordinary trace workflow.
 
 ## Output
 
@@ -2246,6 +2263,9 @@ Expected outputs:
 - `{wd}/harness/apply.sh` — Apply instrumentation to artifact
 - `{wd}/harness/run.sh` — One-command build + run + collect traces
 - `{wd}/harness/INSTRUMENTATION.md` — Guide for Phase 3 agent to adjust instrumentation
+- `{wd}/harness/non-tla/contract.json` — Optional reviewed syscall-input contract
+- `{wd}/harness/non-tla/cases.json` — Optional deterministic generated case set
+- `{wd}/harness/non-tla/evidence.json` — Optional independently validated non-TLA evidence sidecar
 - `{wd}/traces/*.ndjson` — Trace files from test runs
 """
         return self._with_extra(ws, name, prompt)
@@ -2270,6 +2290,24 @@ Expected outputs:
                 print(f"  ~~  {name} -> run.sh: yes, traces: 0 (no traces generated)")
             else:
                 print(f"  --  {name} (no harness output)")
+
+            non_tla_dir = harness_dir / "non-tla"
+            contract = non_tla_dir / "contract.json"
+            cases = non_tla_dir / "cases.json"
+            evidence = non_tla_dir / "evidence.json"
+            present = [path for path in (contract, cases, evidence) if path.is_file()]
+            if len(present) == 3:
+                try:
+                    summary = syscall_inputs.validate_evidence_files(contract, cases, evidence, work_dir=wd)
+                except syscall_inputs.ArtifactError as exc:
+                    print(f"        warning: invalid non-TLA sidecar: {exc}")
+                else:
+                    noun = "execution" if summary.execution_count == 1 else "executions"
+                    counts = ", ".join(f"{status}={count}" for status, count in summary.status_counts)
+                    print(f"        non-TLA evidence: {summary.execution_count} {noun} ({counts})")
+            elif present:
+                missing = ", ".join(path.name for path in (contract, cases, evidence) if not path.is_file())
+                print(f"        warning: incomplete non-TLA sidecar (missing: {missing})")
 
     def monitor_line(self, ws: Workspace) -> str | None:
         return self._monitor(ws, "harness-gen.log", "  Monitor: tail -f */.specula-output/harness-gen.log")

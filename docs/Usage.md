@@ -301,7 +301,7 @@ Most users should run `specula run`, which executes every step in order. The com
 |---|---|---|---|
 | `analyze` | Launches an agent to inspect the source, mine Git history and issues, identify evidence-backed modeling Scenarios, and decide what should be modeled | Target source and the four-field target descriptor | `modeling-brief.md`, `analysis-report.md` |
 | `specgen` | Converts the modeling brief into code-faithful TLA+ specifications | Source and `modeling-brief.md` | `spec/base.tla`, `spec/MC.tla`, `spec/Trace.tla`, configs, and `instrumentation-spec.md` |
-| `harness` | Instruments the implementation and runs test scenarios to collect execution traces | Source and generated specifications | `harness/` and `traces/*.ndjson` |
+| `harness` | Instruments the implementation and runs test scenarios to collect execution traces and optional syscall-input evidence | Source and generated specifications | `harness/`, `traces/*.ndjson`, and optional `harness/non-tla/` sidecars |
 | `validate` | Checks real traces against the specification, runs TLC, and investigates counterexamples | Source, specifications, harness, and traces | `spec/bug-report.md`, `spec/findings.json`, TLC output, and `spec/changelog.md` |
 | `confirm` | Audits and reproduces each candidate bug against the real implementation | Source, modeling brief, and bug report | `confirmed-bugs.md`, reproduction tests, and any repair requests |
 | `classify` | Assigns severity and prepares the concise findings text used by the target summary | `confirmed-bugs.md` | `bug-severity.md` and the summary findings section |
@@ -328,6 +328,24 @@ Use `--check` to run a lightweight path-level preflight without starting an agen
 ```bash
 specula validate --check --artifact=/path/to/source name
 ```
+
+### `specula syscall-inputs`
+
+Phase 2.5 uses this deterministic utility for syscall user-pointer and structured-input campaigns. It generates abstract cases from a reviewed contract and validates the contract-bound evidence sidecar:
+
+```bash
+specula syscall-inputs generate \
+  --contract .specula-output/harness/non-tla/contract.json \
+  --output .specula-output/harness/non-tla/cases.json
+
+specula syscall-inputs validate \
+  .specula-output/harness/non-tla/evidence.json \
+  --contract .specula-output/harness/non-tla/contract.json \
+  --cases .specula-output/harness/non-tla/cases.json \
+  --work-dir .specula-output
+```
+
+The target harness materializes and executes generated cases. Non-TLA evidence remains under `harness/non-tla/`; it is not written to the model-checking-only `spec/findings.json`.
 
 ## CLI Reference
 

@@ -167,6 +167,9 @@ class TestTargetIndex(OutputIndexCase):
         self.write(work_dir, "spec/base.tla")
         self.write(work_dir, "spec/MC.tla")
         self.write(work_dir, "harness/INSTRUMENTATION.md")
+        self.write(work_dir, "harness/non-tla/contract.json")
+        self.write(work_dir, "harness/non-tla/cases.json")
+        self.write(work_dir, "harness/non-tla/evidence.json")
         self.write(work_dir, "spec/repair-ledger.md")
         pipeline_log.write_text("pipeline\n")
         rendered = oi.render_target_index("demo", work_dir, pipeline_log=pipeline_log)
@@ -175,6 +178,11 @@ class TestTargetIndex(OutputIndexCase):
         self.assertIn("- TLA+ models: [base.tla](spec/base.tla) · [MC.tla](spec/MC.tla)", rendered)
         self.assertNotIn("Trace.tla", rendered)
         self.assertIn("- Harness guide: [INSTRUMENTATION.md](harness/INSTRUMENTATION.md)", rendered)
+        self.assertIn(
+            "- Non-TLA syscall evidence: [contract](harness/non-tla/contract.json) · "
+            "[cases](harness/non-tla/cases.json) · [evidence](harness/non-tla/evidence.json)",
+            rendered,
+        )
         self.assertIn("- Repair history: [repair-ledger.md](spec/repair-ledger.md)", rendered)
         self.assertIn("## Troubleshooting", rendered)
         self.assertIn("- Full pipeline log: [pipeline.log](../../pipeline.log)", rendered)

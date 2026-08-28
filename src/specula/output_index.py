@@ -245,6 +245,16 @@ def render_target_index(name: str, work_dir: Path, *, pipeline_log: Path | None 
     harness_guide = work_dir / "harness" / "INSTRUMENTATION.md"
     if _is_file_under(work_dir, harness_guide):
         technical.append(f"- Harness guide: {_link('INSTRUMENTATION.md', harness_guide, work_dir)}")
+    non_tla_dir = work_dir / "harness" / "non-tla"
+    non_tla_artifacts = [non_tla_dir / name for name in ("contract.json", "cases.json", "evidence.json")]
+    if all(_is_file_under(work_dir, path) for path in non_tla_artifacts):
+        technical.append(
+            "- Non-TLA syscall evidence: "
+            + " · ".join(
+                _link(label, path, work_dir)
+                for label, path in zip(("contract", "cases", "evidence"), non_tla_artifacts, strict=True)
+            )
+        )
     repair_ledger = spec_dir / "repair-ledger.md"
     if _is_file_under(work_dir, repair_ledger):
         technical.append(f"- Repair history: {_link('repair-ledger.md', repair_ledger, work_dir)}")

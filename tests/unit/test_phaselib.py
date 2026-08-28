@@ -27,6 +27,7 @@ stdlib unittest, collected natively by pytest:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -48,7 +49,7 @@ if str(SRC) not in sys.path:  # test the tree this file lives in, installed or n
 
 import specula.progress as progress_module  # noqa: E402
 import specula.quota as quota  # noqa: E402
-from specula import phaselib, resource_summary, resumelib, snapshotlib  # noqa: E402
+from specula import phaselib, resource_summary, resumelib, snapshotlib, syscall_inputs  # noqa: E402
 from specula.adapters.utils.policy import POLICY_BLOCKED_RC  # noqa: E402
 from specula.adapters.utils.transient import TRANSIENT_FAILURE_RC  # noqa: E402
 from specula.progress import ProgressConfig, RunningAgent  # noqa: E402
@@ -442,6 +443,22 @@ class TestDryRunCommand(PhaseCase):
                 self.assertNotIn("/skills/", body)
                 self.assertNotIn(".claude/skills", body)
                 self.assertIn(str(wd / spec["out"]), body)  # a key output/inputs path
+
+    def test_harness_prompt_keeps_non_tla_evidence_in_an_independent_sidecar(self) -> None:
+        spec = BY_KEY["harness_generation"]
+        rc, out = self.dry_run(spec)
+        self.assertEqual(rc, 0, out)
+
+        work_dir = self.work_dir()
+        body = (work_dir / spec["prompt"]).read_text()
+        non_tla = work_dir / "harness" / "non-tla"
+        self.assertIn("specula syscall-inputs generate", body)
+        self.assertIn(str(non_tla / "contract.json"), body)
+        self.assertIn(str(non_tla / "cases.json"), body)
+        self.assertIn(str(non_tla / "evidence.json"), body)
+        self.assertIn(f"--work-dir {work_dir}", body)
+        self.assertIn("must not be written to `spec/findings.json`", body)
+        self.assertIn("Do not derive cases from known findings", body)
 
     def test_codex_prompt_materializes_exactly_one_installed_id(self) -> None:
         spec = BY_KEY["code_analysis"]
@@ -3876,6 +3893,78 @@ class TestSummarize(PhaseCase):
                 got = buf.getvalue()
                 for want in tc["want"]:
                     self.assertIn(want.replace(NAME, name), got)
+
+    def test_harness_summary_validates_non_tla_evidence_sidecar(self) -> None:
+        work_dir = self.work_dir()
+        non_tla = work_dir / "harness" / "non-tla"
+        non_tla.mkdir(parents=True)
+        (work_dir / "harness" / "run.sh").write_text("#!/bin/sh\n")
+        (work_dir / "harness" / "INSTRUMENTATION.md").write_text("guide\n")
+        (work_dir / "traces").mkdir()
+        (work_dir / "traces" / "one.ndjson").write_text("{}\n")
+        contract = {
+            "schema_version": 1,
+            "artifact": "syscall-input-contract",
+            "campaign": "summary-test",
+            "page_size": 16,
+            "max_cases": 20,
+            "syscalls": [
+                {
+                    "name": "copy_out",
+                    "direction": "kernel-to-user",
+                    "shape": "buffer",
+                    "lengths": [1],
+                    "pointer_regions": ["valid"],
+                }
+            ],
+        }
+        contract_path = non_tla / "contract.json"
+        cases_path = non_tla / "cases.json"
+        evidence_path = non_tla / "evidence.json"
+        contract_path.write_text(json.dumps(contract))
+        cases = syscall_inputs.generate_cases(contract)
+        cases_path.write_text(json.dumps(cases, indent=2, sort_keys=True) + "\n")
+        evidence_file = work_dir / "harness" / "non-tla" / "evidence" / "one.ndjson"
+        evidence_file.parent.mkdir()
+        evidence_file.write_text("{\"observed\":true}\n")
+        evidence_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "artifact": "syscall-input-evidence",
+                    "campaign": "summary-test",
+                    "contract_sha256": cases["contract_sha256"],
+                    "cases_sha256": hashlib.sha256(cases_path.read_bytes()).hexdigest(),
+                    "target": {"name": "demo", "identity": "commit-1", "smp": 1},
+                    "executions": [
+                        {
+                            "case_id": cases["cases"][0]["id"],
+                            "status": "candidate",
+                            "oracle": "usercopy-boundary",
+                            "observations": {
+                                "result": {"return": 0, "errno": None},
+                                "progress": {
+                                    "attempted": 1,
+                                    "copied": 1,
+                                    "committed": 1,
+                                    "reported": 0,
+                                    "offset_advanced": 0,
+                                },
+                                "state_before": {},
+                                "state_after": {},
+                            },
+                            "evidence": ["harness/non-tla/evidence/one.ndjson"],
+                        }
+                    ],
+                }
+            )
+        )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            phaselib.PHASES["harness_generation"].summarize(phaselib.Workspace([NAME]), [NAME])
+
+        self.assertIn("non-TLA evidence: 1 execution (candidate=1)", buf.getvalue())
 
 
 class TestModelEffortLiveLaunch(PhaseCase):

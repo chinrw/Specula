@@ -29,19 +29,20 @@ usage: specula <command> [options] "name|github|lang|reference" [...]
 A framework for finding deep bugs in system code using TLA+.
 
 commands:
-  run       Run the full pipeline (all phases: analysis -> classification)
-  batch     Batch-run the pipeline over a task queue (workers, quota gate, retries)
-  analyze   Phase 1 - static code analysis -> modeling brief
-  specgen   Phase 2 - generate TLA+ specs from the modeling brief
-  harness   Phase 2.5 - instrument the system + collect traces
-  validate  Phase 3 - trace validation + model checking (bug hunting)
-  confirm   Phase 4a - confirm & reproduce model-checking bugs
-  classify  Phase 4b - assign severity tiers to confirmed bugs
-  review    Run an inter-phase review agent
-  setup     Install Specula agent skills + MCP tools
+  run             Run the full pipeline (all phases: analysis -> classification)
+  batch           Batch-run the pipeline over a task queue (workers, quota gate, retries)
+  analyze         Phase 1 - static code analysis -> modeling brief
+  specgen         Phase 2 - generate TLA+ specs from the modeling brief
+  harness         Phase 2.5 - instrument the system + collect traces
+  validate        Phase 3 - trace validation + model checking (bug hunting)
+  confirm         Phase 4a - confirm & reproduce model-checking bugs
+  classify        Phase 4b - assign severity tiers to confirmed bugs
+  review          Run an inter-phase review agent
+  setup           Install Specula agent skills + MCP tools
+  syscall-inputs  Generate syscall-input cases and validate non-TLA sidecars
 
-Every argument after <command> is forwarded verbatim to the underlying
-launch script. Run 'specula <command> --help' for a command's full flag set.
+Phase-command arguments are forwarded verbatim to their launch scripts.
+Run 'specula <command> --help' for a command's full flag set.
 """
 
 
@@ -143,6 +144,18 @@ class TestShim(unittest.TestCase):
                 self.assertNotIn("launch_", r.stdout)
                 self.assertNotIn("Claude Code agent", r.stdout)
                 self.assertNotIn("claude CLI installed", r.stdout)
+
+    def test_syscall_inputs_help_uses_public_cli(self) -> None:
+        r = subprocess.run(
+            ["bash", str(REPO_ROOT / "specula"), "syscall-inputs", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual((r.returncode, r.stderr), (0, ""), r.stdout)
+        self.assertIn("usage: specula syscall-inputs", r.stdout)
+        self.assertIn("generate", r.stdout)
+        self.assertIn("validate", r.stdout)
 
     def test_root_launcher_prints_version(self) -> None:
         r = subprocess.run(
