@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import subprocess
 import unittest
 from pathlib import Path
@@ -146,11 +147,14 @@ class TestShim(unittest.TestCase):
                 self.assertNotIn("claude CLI installed", r.stdout)
 
     def test_syscall_inputs_help_uses_public_cli(self) -> None:
+        # Python 3.14 argparse honors FORCE_COLOR even for non-tty streams;
+        # pin colors off so the help text stays byte-comparable.
         r = subprocess.run(
             ["bash", str(REPO_ROOT / "specula"), "syscall-inputs", "--help"],
             capture_output=True,
             text=True,
             timeout=10,
+            env={**os.environ, "PYTHON_COLORS": "0"},
         )
         self.assertEqual((r.returncode, r.stderr), (0, ""), r.stdout)
         self.assertIn("usage: specula syscall-inputs", r.stdout)

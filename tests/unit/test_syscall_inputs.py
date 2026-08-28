@@ -9,14 +9,21 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from specula import cli
+from specula import cli, syscall_inputs
 
 
 class TestPublicCommand(unittest.TestCase):
     def test_help_exposes_generate_and_validate_without_launching_a_phase(self) -> None:
         out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        # Python 3.14 argparse honors FORCE_COLOR even for non-tty streams;
+        # pin colors off so the help text stays byte-comparable.
+        with (
+            mock.patch.dict("os.environ", {"PYTHON_COLORS": "0"}),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             rc = cli.main(["syscall-inputs", "--help"])
 
         self.assertEqual(rc, 0)
@@ -205,6 +212,37 @@ class TestPublicCommand(unittest.TestCase):
                 )
             self.assertEqual(rc, 2)
             self.assertIn("no applicable input combinations", err.getvalue())
+
+    def test_iovec_generation_normalizes_semantically_irrelevant_dimensions(self) -> None:
+        document = syscall_inputs.generate_cases(
+            {
+                "schema_version": 1,
+                "artifact": "syscall-input-contract",
+                "campaign": "degenerate-iovec-dimensions",
+                "page_size": 4096,
+                "max_cases": 10,
+                "syscalls": [
+                    {
+                        "name": "vector_copy",
+                        "direction": "user-to-kernel",
+                        "shape": "iovec",
+                        "lengths": [1, 4],
+                        "pointer_regions": ["valid"],
+                        "iov_counts": [0, 1],
+                        "alias_topologies": ["disjoint", "identical", "partial-overlap"],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(document["generation"]["candidate_count"], 3)
+        self.assertEqual(
+            [
+                (case["requested_length"], case["input"]["alias_topology"])
+                for case in document["cases"]
+            ],
+            [(0, "none"), (1, "single"), (4, "single")],
+        )
 
     def test_generation_is_direction_aware_and_reports_caps(self) -> None:
         with tempfile.TemporaryDirectory() as raw_tmp:

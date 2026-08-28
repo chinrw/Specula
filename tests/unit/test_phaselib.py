@@ -444,7 +444,7 @@ class TestDryRunCommand(PhaseCase):
                 self.assertNotIn(".claude/skills", body)
                 self.assertIn(str(wd / spec["out"]), body)  # a key output/inputs path
 
-    def test_harness_prompt_keeps_non_tla_evidence_in_an_independent_sidecar(self) -> None:
+    def test_harness_prompt_routes_non_tla_overlay_to_the_skill(self) -> None:
         spec = BY_KEY["harness_generation"]
         rc, out = self.dry_run(spec)
         self.assertEqual(rc, 0, out)
@@ -452,13 +452,13 @@ class TestDryRunCommand(PhaseCase):
         work_dir = self.work_dir()
         body = (work_dir / spec["prompt"]).read_text()
         non_tla = work_dir / "harness" / "non-tla"
-        self.assertIn("specula syscall-inputs generate", body)
+        self.assertIn("syscall-input overlay", body)
+        self.assertIn("does not replace or relax", body)
         self.assertIn(str(non_tla / "contract.json"), body)
         self.assertIn(str(non_tla / "cases.json"), body)
         self.assertIn(str(non_tla / "evidence.json"), body)
-        self.assertIn(f"--work-dir {work_dir}", body)
-        self.assertIn("must not be written to `spec/findings.json`", body)
-        self.assertIn("Do not derive cases from known findings", body)
+        # The workflow steps live in the skill; the prompt only routes to it.
+        self.assertNotIn("specula syscall-inputs generate", body)
 
     def test_codex_prompt_materializes_exactly_one_installed_id(self) -> None:
         spec = BY_KEY["code_analysis"]
@@ -3965,6 +3965,75 @@ class TestSummarize(PhaseCase):
             phaselib.PHASES["harness_generation"].summarize(phaselib.Workspace([NAME]), [NAME])
 
         self.assertIn("non-TLA evidence: 1 execution (candidate=1)", buf.getvalue())
+        self.assertNotIn("no completed runtime execution", buf.getvalue())
+
+    def test_harness_summary_warns_when_sidecar_has_no_completed_execution(self) -> None:
+        work_dir = self.work_dir()
+        non_tla = work_dir / "harness" / "non-tla"
+        non_tla.mkdir(parents=True)
+        (work_dir / "harness" / "run.sh").write_text("#!/bin/sh\n")
+        (work_dir / "harness" / "INSTRUMENTATION.md").write_text("guide\n")
+        (work_dir / "traces").mkdir()
+        (work_dir / "traces" / "one.ndjson").write_text("{}\n")
+        contract = {
+            "schema_version": 1,
+            "artifact": "syscall-input-contract",
+            "campaign": "summary-test",
+            "page_size": 16,
+            "max_cases": 20,
+            "syscalls": [
+                {
+                    "name": "copy_out",
+                    "direction": "kernel-to-user",
+                    "shape": "buffer",
+                    "lengths": [1],
+                    "pointer_regions": ["valid"],
+                }
+            ],
+        }
+        (non_tla / "contract.json").write_text(json.dumps(contract))
+        cases = syscall_inputs.generate_cases(contract)
+        cases_path = non_tla / "cases.json"
+        cases_path.write_text(json.dumps(cases, indent=2, sort_keys=True) + "\n")
+        (non_tla / "evidence.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "artifact": "syscall-input-evidence",
+                    "campaign": "summary-test",
+                    "contract_sha256": cases["contract_sha256"],
+                    "cases_sha256": hashlib.sha256(cases_path.read_bytes()).hexdigest(),
+                    "target": {"name": "demo", "identity": "commit-1", "smp": 1},
+                    "executions": [
+                        {
+                            "case_id": cases["cases"][0]["id"],
+                            "status": "not-run",
+                            "oracle": "usercopy-boundary",
+                            "observations": {
+                                "result": {"return": None, "errno": None},
+                                "progress": {
+                                    "attempted": None,
+                                    "copied": None,
+                                    "committed": None,
+                                    "reported": None,
+                                    "offset_advanced": None,
+                                },
+                                "state_before": {},
+                                "state_after": {},
+                            },
+                            "evidence": [],
+                        }
+                    ],
+                }
+            )
+        )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            phaselib.PHASES["harness_generation"].summarize(phaselib.Workspace([NAME]), [NAME])
+
+        self.assertIn("non-TLA evidence: 1 execution (not-run=1)", buf.getvalue())
+        self.assertIn("no completed runtime execution", buf.getvalue())
 
 
 class TestModelEffortLiveLaunch(PhaseCase):

@@ -2237,21 +2237,13 @@ Use the installed Specula skill {prompt_skill_ids("harness-generation")}. Read i
 
 Do everything the skill specifies. Do not add, relax, or override any step here.
 
-## Non-TLA syscall-input track
+## Non-TLA syscall-input overlay
 
-If the modeling brief or instrumentation plan includes user-controlled syscall pointers,
-fallible user copies, or structured inputs such as iovecs, follow the skill's syscall-input
-workflow in addition to trace generation:
-
-1. Write the reviewed target-neutral contract to `{wd}/harness/non-tla/contract.json`.
-2. Run `specula syscall-inputs generate --contract {wd}/harness/non-tla/contract.json --output {wd}/harness/non-tla/cases.json`.
-3. Materialize and execute those abstract cases against the real target; do not simulate syscall behavior.
-4. Record observations in `{wd}/harness/non-tla/evidence.json`, then run
-   `specula syscall-inputs validate {wd}/harness/non-tla/evidence.json --contract {wd}/harness/non-tla/contract.json --cases {wd}/harness/non-tla/cases.json --work-dir {wd}`.
-
-The sidecar is candidate evidence and must not be written to `spec/findings.json`.
-Do not derive cases from known findings, fixing patches, benchmark labels, or held-out source locations.
-If the campaign has no syscall user-input contract, leave `harness/non-tla/` empty and continue the ordinary trace workflow.
+When the campaign includes user-controlled syscall pointers, fallible user copies, or
+structured inputs such as iovecs, execute the syscall-input overlay defined by the
+harness-generation skill (`references/syscall-input-contracts.md`). The overlay augments
+the ordinary trace workflow; it does not replace or relax it. Without such inputs, leave
+`{wd}/harness/non-tla/` empty.
 
 ## Output
 
@@ -2305,6 +2297,12 @@ Expected outputs:
                     noun = "execution" if summary.execution_count == 1 else "executions"
                     counts = ", ".join(f"{status}={count}" for status, count in summary.status_counts)
                     print(f"        non-TLA evidence: {summary.execution_count} {noun} ({counts})")
+                    completed = {status for status, _ in summary.status_counts} - {"not-run", "harness-error"}
+                    if not completed:
+                        print(
+                            "        warning: sidecar has no completed runtime execution; "
+                            "it does not support a runtime-coverage claim"
+                        )
             elif present:
                 missing = ", ".join(path.name for path in (contract, cases, evidence) if not path.is_file())
                 print(f"        warning: incomplete non-TLA sidecar (missing: {missing})")
